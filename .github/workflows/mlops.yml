@@ -41,6 +41,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # JOB 2 - TRAIN
   # Xac thuc S3, pull du lieu bang DVC, huan luyen mo hinh, upload artifact.
+  # Model moi duoc dua vao models/candidate/ chu KHONG ghi de models/latest/.
+  # Chi khi qua het cac cong o Job 3 thi Job 4 moi promote candidate len latest.
+  # Nho vay mot model kem khong bao gio nam o vi tri ma VM se tai khi khoi dong.
   # Chi chay khi Job 1 (Unit Test) hoan thanh thanh cong.
   # ---------------------------------------------------------------------------
   train:
@@ -50,6 +53,7 @@ jobs:
     outputs:
       accuracy: ${{ steps.read_metrics.outputs.accuracy }}
       f1_score: ${{ steps.read_metrics.outputs.f1_score }}
+      prev_accuracy: ${{ steps.prev_metrics.outputs.prev_accuracy }}
 
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +90,20 @@ jobs:
           print(f"Da cau hinh credentials AWS, region={region}")
           EOF
 
+      - name: Read metrics of currently deployed model
+        id: prev_metrics
+        env:
+          CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
+        run: |
+          if aws s3 cp "s3://$CLOUD_BUCKET/metrics/latest.json" /tmp/prev.json 2>/dev/null; then
+            PREV=$(python -c "import json; print(json.load(open('/tmp/prev.json'))['accuracy'])")
+            echo "Model dang chay tren VM co accuracy = $PREV"
+          else
+            PREV=""
+            echo "Chua co metrics tren S3 - day la lan chay dau tien."
+          fi
+          echo "prev_accuracy=$PREV" >> $GITHUB_OUTPUT
+
       - name: Pull data with DVC
         # Chi keo train_phase1 va eval - train_phase2 khong can cho viec huan luyen
         run: dvc pull data/train_phase1.csv.dvc data/eval.csv.dvc
@@ -105,9 +123,11 @@ jobs:
               f.write(f"f1_score={m['f1_score']}\n")
 
           print(f"accuracy = {m['accuracy']:.4f} | f1_score = {m['f1_score']:.4f}")
+          print(f"model_type = {m['model_type']}")
+          print(f"phan bo nhan = {m['label_distribution']}")
           EOF
 
-      - name: Upload model to S3
+      - name: Upload candidate model to S3
         env:
           CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
         run: |
@@ -116,23 +136,28 @@ jobs:
           import boto3
 
           bucket = os.environ["CLOUD_BUCKET"]
-          key = "models/latest/model.pkl"
+          key = "models/candidate/model.pkl"
 
           boto3.client("s3").upload_file("models/model.pkl", bucket, key)
           print(f"Da upload -> s3://{bucket}/{key}")
+          print("Chua ghi de models/latest - cho qua eval gate da.")
           EOF
 
-      - name: Save metrics as artifact
+      - name: Save metrics and report as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: metrics
-          path: outputs/metrics.json
+          path: |
+            outputs/metrics.json
+            outputs/report.txt
 
 
   # ---------------------------------------------------------------------------
   # JOB 3 - EVAL
-  # Kiem tra nguong chat luong (accuracy >= 0.70).
-  # Pipeline dung lai o day neu mo hinh chua dat yeu cau.
+  # Hai cong chat luong:
+  #   1. Nguong tuyet doi: accuracy >= EVAL_THRESHOLD.
+  #   2. Chong tut hang: accuracy moi khong duoc thap hon model dang chay.
+  # Pipeline dung lai o day neu mot trong hai cong khong qua.
   # Chi chay khi Job 2 (Train) hoan thanh thanh cong.
   # ---------------------------------------------------------------------------
   eval:
@@ -145,6 +170,7 @@ jobs:
         env:
           ACCURACY: ${{ needs.train.outputs.accuracy }}
           F1_SCORE: ${{ needs.train.outputs.f1_score }}
+          PREV_ACCURACY: ${{ needs.train.outputs.prev_accuracy }}
         run: |
           python - <<'EOF'
           import os
@@ -153,30 +179,91 @@ jobs:
           acc = float(os.environ["ACCURACY"])
           f1 = float(os.environ["F1_SCORE"])
           threshold = float(os.environ["EVAL_THRESHOLD"])
+          prev_raw = os.environ.get("PREV_ACCURACY", "").strip()
 
           print(f"accuracy  = {acc:.4f}")
           print(f"f1_score  = {f1:.4f}")
           print(f"threshold = {threshold:.2f}")
+          print()
 
+          # Cong 1 - nguong chat luong tuyet doi
           if acc < threshold:
               raise SystemExit(
                   f"FAILED: accuracy {acc:.4f} < {threshold:.2f}. Huy deploy."
               )
+          print(f"PASSED cong 1 - dat nguong: {acc:.4f} >= {threshold:.2f}")
 
-          print("PASSED: dat nguong chat luong, tien hanh trien khai.")
+          # Cong 2 - chong tut hang so voi model dang phuc vu
+          if prev_raw:
+              prev = float(prev_raw)
+              print(f"Model dang chay: {prev:.4f} -> model moi: {acc:.4f} "
+                    f"({acc - prev:+.4f})")
+              if acc < prev:
+                  raise SystemExit(
+                      f"FAILED: model moi kem hon model dang chay "
+                      f"({acc:.4f} < {prev:.4f}). Giu nguyen ban cu, huy deploy."
+                  )
+              print("PASSED cong 2 - khong tut hang so voi ban cu.")
+          else:
+              print("Chua co model nao dang chay - bo qua cong 2.")
+
+          print()
+          print("Ca hai cong deu qua, tien hanh trien khai.")
           EOF
 
 
   # ---------------------------------------------------------------------------
   # JOB 4 - DEPLOY
-  # Trien khai len EC2 qua SSH.
+  # Promote candidate len latest roi restart service tren EC2.
   # Chi chay khi Job 3 (Eval) hoan thanh thanh cong.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy
-    needs: eval
+    needs: [train, eval]
     runs-on: ubuntu-latest
     steps:
+
+      - name: Authenticate to S3
+        env:
+          CLOUD_CREDENTIALS: ${{ secrets.CLOUD_CREDENTIALS }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          creds = json.loads(os.environ["CLOUD_CREDENTIALS"])
+          key_id = creds["aws_access_key_id"]
+          secret = creds["aws_secret_access_key"]
+          region = creds.get("region", "us-east-1")
+
+          print(f"::add-mask::{key_id}")
+          print(f"::add-mask::{secret}")
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"AWS_ACCESS_KEY_ID={key_id}\n")
+              f.write(f"AWS_SECRET_ACCESS_KEY={secret}\n")
+              f.write(f"AWS_DEFAULT_REGION={region}\n")
+          EOF
+
+      - name: Promote candidate model to latest
+        env:
+          CLOUD_BUCKET: ${{ secrets.CLOUD_BUCKET }}
+          ACCURACY: ${{ needs.train.outputs.accuracy }}
+          F1_SCORE: ${{ needs.train.outputs.f1_score }}
+        run: |
+          aws s3 cp "s3://$CLOUD_BUCKET/models/candidate/model.pkl" \
+                    "s3://$CLOUD_BUCKET/models/latest/model.pkl"
+
+          python3 - <<'EOF'
+          import json, os
+          json.dump(
+              {"accuracy": float(os.environ["ACCURACY"]),
+               "f1_score": float(os.environ["F1_SCORE"])},
+              open("/tmp/latest.json", "w"),
+          )
+          EOF
+
+          aws s3 cp /tmp/latest.json "s3://$CLOUD_BUCKET/metrics/latest.json"
+          echo "Da promote candidate -> latest, va ghi lai metrics de lan sau doi chieu."
 
       - name: SSH deploy to VM
         uses: appleboy/ssh-action@v1.0.3
