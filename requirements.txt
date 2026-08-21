@@ -9,3 +9,5 @@ uvicorn==0.29.0
 joblib==1.4.2
 google-cloud-storage==2.16.0
 pyyaml==6.0.1
+# mlflow 2.13 con import pkg_resources; venv cua pip moi khong con kem setuptools
+setuptools<81
