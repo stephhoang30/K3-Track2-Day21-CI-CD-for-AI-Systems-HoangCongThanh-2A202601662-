@@ -52,13 +52,15 @@ VM không chứa bất kỳ access key nào: `boto3` lấy credentials từ IAM 
 
 **`aws login` và `boto3` không hiểu nhau.** AWS CLI v2 lưu credentials theo cơ chế `login_session` riêng, `boto3` (và do đó DVC) không đọc được nên `dvc push` báo "Unable to locate credentials". Xuất credentials tạm bằng `aws configure export-credentials --format env` trước khi chạy DVC.
 
-**Push không kích hoạt được workflow.** Repo là một fork, GitHub chặn workflow chạy từ sự kiện `push` cho tới khi chủ repo bấm xác nhận trong tab Actions. Chẩn đoán bằng cách loại trừ: cả `src/**.py` lẫn `data/**.dvc` đều không trigger trong khi `workflow_dispatch` chạy bình thường, nên nguyên nhân không nằm ở bộ lọc `paths`.
+**Push không kích hoạt được workflow.** Repo là một fork, GitHub chặn workflow chạy từ sự kiện `push` cho tới khi chủ repo bấm xác nhận trong tab Actions. Chẩn đoán bằng cách loại trừ: cả `src/**.py` lẫn `data/**.dvc` đều không trigger trong khi `workflow_dispatch` chạy bình thường, nên nguyên nhân không nằm ở bộ lọc `paths`. Sau khi bật, đã kiểm chứng lại bằng hai lần push liên tiếp — cả hai đều tự kích hoạt pipeline với `event=push`.
 
 ## 5. Bằng chứng
 
 | Nội dung | Nơi kiểm chứng |
 |---|---|
 | 6 run MLflow, 5 cấu hình khác nhau | `mlflow ui --backend-store-uri sqlite:///mlflow.db` |
-| Eval gate chặn deploy ở 0.6840 | Actions run `32450225306` |
-| Cả 4 job xanh trên 5996 mẫu | Actions run `32452355777` |
+| Eval gate chặn deploy ở 0.6840, Deploy bị skip | Actions run `32452841624` — kích hoạt bởi `push` |
+| Cả 4 job xanh trên 5996 mẫu, Deploy thành công | Actions run `32453084864` — kích hoạt bởi commit `c41a2a0` |
+| Commit dữ liệu tự kích hoạt pipeline | Tên run `32453084864` chính là commit message `data: bổ sung 2998 mẫu dữ liệu mới (train_phase2)` |
+| VM tự nạp model mới sau deploy | `journalctl -u mlops-serve` — 39.9 MB, thay cho bản 21.6 MB của 2998 mẫu |
 | API trả kết quả | `curl http://3.239.208.69:8000/predict` |
