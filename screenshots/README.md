@@ -9,7 +9,25 @@
 | `03-actions-eval-blocked.png` | Run #5, `Triggered via push`, Eval đỏ chặn Deploy | Bước 2 — Eval gate | 4 |
 | `04-actions-all-green.png` | Run #6, `Triggered via push`, cả 4 job xanh, tiêu đề là commit dữ liệu | Bước 2 — CI/CD · Bước 3 — Tự động hóa | 16 + 12 |
 | `05-api-curl.png` | `GET /health`, `POST /predict` hợp lệ, và `POST /predict` sai định dạng | Bước 2 — Serving | 12 |
-| `06-s3-bucket.png` | Nội dung bucket: 4 object DVC + `models/latest/model.pkl` | Bước 2 — DVC | 12 |
+| `06-s3-bucket.png` | Liệt kê toàn bộ bucket qua CLI: 4 object DVC + `models/latest/model.pkl`, kèm dung lượng | Bước 2 — DVC | 12 |
+| `07-s3-console-model.png` | S3 Console, `models/latest/` — `model.pkl`, 39.9 MB | Bước 2 — DVC | 12 |
+| `08-s3-console-dvc.png` | S3 Console, `dvc/files/md5/` — 4 thư mục băm `4b/ 64/ 97/ b5/` | Bước 2 — DVC | 12 |
+
+## Đọc ảnh 06 và 08 thế nào
+
+DVC lưu theo nội dung (content-addressed), nên trên S3 tên object là mã băm md5
+chứ không phải `train_phase1.csv`. Đối chiếu với `data/*.dvc` trong repo:
+
+| Băm | Ứng với |
+|---|---|
+| `97f98bd0…` | `train_phase1.csv` — bản 2998 mẫu (Bước 2) |
+| `64c88e83…` | `train_phase1.csv` — bản 5996 mẫu (Bước 3) |
+| `b5762308…` | `eval.csv` — 500 mẫu, không đổi |
+| `4b1632d3…` | `train_phase2.csv` — 2998 mẫu |
+
+Hai băm đầu là hai phiên bản của cùng một file. Đó chính là thứ DVC làm: git giữ
+con trỏ, S3 giữ nội dung, mỗi lần dữ liệu đổi thì sinh một object mới mà bản cũ
+vẫn còn nguyên để tái tạo lại được.
 
 ## Cách tạo lại
 
@@ -27,10 +45,4 @@ cả log thì mở hai run đó trong trình duyệt đã đăng nhập và ch�
 ảnh chụp cửa sổ terminal. Nội dung là output nguyên văn tại thời điểm chạy,
 có kèm mốc thời gian UTC trong ảnh 05.
 
-## Còn thiếu
-
-Rubric yêu cầu ảnh **AWS S3 Console**. Ảnh `06` là bản liệt kê qua CLI, tương
-đương về nội dung nhưng khác giao diện. Muốn đúng chữ của đề thì đăng nhập
-console và chụp màn hình bucket:
-
-https://s3.console.aws.amazon.com/s3/buckets/mlops-lab-244669245042
+Ảnh 07 và 08 chụp trực tiếp từ AWS S3 Console.
