@@ -250,8 +250,14 @@ jobs:
           ACCURACY: ${{ needs.train.outputs.accuracy }}
           F1_SCORE: ${{ needs.train.outputs.f1_score }}
         run: |
-          aws s3 cp "s3://$CLOUD_BUCKET/models/candidate/model.pkl" \
-                    "s3://$CLOUD_BUCKET/models/latest/model.pkl"
+          # Dung s3api copy-object chu khong dung "aws s3 cp": lenh cp con goi
+          # GetObjectTagging/PutObjectTagging, ma IAM user CI co tinh khong duoc
+          # cap hai quyen do. copy-object chi can GetObject + PutObject.
+          aws s3api copy-object \
+            --bucket "$CLOUD_BUCKET" \
+            --key models/latest/model.pkl \
+            --copy-source "$CLOUD_BUCKET/models/candidate/model.pkl" \
+            --query 'CopyObjectResult.LastModified' --output text
 
           python3 - <<'EOF'
           import json, os
